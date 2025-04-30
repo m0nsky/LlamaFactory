@@ -17,6 +17,8 @@
 
 from typing import TYPE_CHECKING, List, Optional
 
+from unsloth import unsloth_train
+
 from ...data import PairwiseDataCollatorWithPadding, get_dataset, get_template_and_fix_tokenizer
 from ...extras.ploting import plot_loss
 from ...model import load_model, load_tokenizer
@@ -65,7 +67,7 @@ def run_rm(
 
     # Training
     if training_args.do_train:
-        train_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+        train_result = unsloth_train(resume_from_checkpoint=training_args.resume_from_checkpoint)
         trainer.save_model()
         if training_args.should_save:
             fix_valuehead_checkpoint(model, training_args.output_dir, training_args.save_safetensors)
