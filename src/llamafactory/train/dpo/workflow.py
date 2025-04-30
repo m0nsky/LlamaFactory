@@ -82,7 +82,7 @@ def run_dpo(
 
     # Training
     if training_args.do_train:
-        train_result = unsloth_train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+        train_result = unsloth_train(trainer)
         trainer.save_model()
         if finetuning_args.include_effective_tokens_per_second:
             train_result.metrics["effective_tokens_per_sec"] = calculate_tps(

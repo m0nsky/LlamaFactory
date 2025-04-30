@@ -62,7 +62,7 @@ def run_pt(
 
     # Training
     if training_args.do_train:
-        train_result = unsloth_train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+        train_result = unsloth_train(trainer)
         trainer.save_model()
         trainer.log_metrics("train", train_result.metrics)
         trainer.save_metrics("train", train_result.metrics)
