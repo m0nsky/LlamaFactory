@@ -497,9 +497,13 @@ def get_train_args(args: dict[str, Any] | list[str] | None = None) -> _TRAIN_CLS
         model_args.compute_dtype = torch.float16
 
     model_args.device_map = {"": get_current_device()}
-    model_args.model_max_length = data_args.cutoff_len
     model_args.block_diag_attn = data_args.neat_packing
+    # Auto-enable packing for PT stage if not explicitly set
+    was_packing_none = data_args.packing is None
     data_args.packing = data_args.packing if data_args.packing is not None else finetuning_args.stage == "pt"
+    if was_packing_none and data_args.packing:
+        data_args.cutoff_len -= 1  # Apply adjustment that __post_init__ missed when packing was auto-enabled
+    model_args.model_max_length = data_args.cutoff_len  # Set after cutoff_len adjustment
 
     # Log on each process the small summary
     logger.info(

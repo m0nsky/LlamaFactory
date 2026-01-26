@@ -240,9 +240,35 @@ def _get_preprocessed_dataset(
     if dataset is None:
         return None
 
+    # Auto-detect eval dataset format to allow mixed PT/SFT eval during any training stage
+    effective_stage = stage
+    disable_packing_for_eval = False
+    if is_eval and stage in ("pt", "sft"):
+        try:
+            first_example = next(iter(dataset))
+            has_response = first_example.get("_response") and len(first_example["_response"]) > 0
+            if stage == "pt" and has_response:
+                effective_stage = "sft"
+                disable_packing_for_eval = True  # Don't pack SFT eval data during PT
+                logger.info_rank0("Detected SFT-format eval dataset during PT stage, using SFT processor (non-packed).")
+            elif stage == "sft" and not has_response:
+                effective_stage = "pt"
+                logger.info_rank0("Detected PT-format eval dataset during SFT stage, using PT processor.")
+        except StopIteration:
+            pass
+
+    # Temporarily disable packing for SFT eval to avoid sequence length issues
+    original_packing = data_args.packing
+    if disable_packing_for_eval:
+        data_args.packing = False
+
     dataset_processor = _get_dataset_processor(
-        data_args, stage, template, tokenizer, processor, do_generate=(training_args.predict_with_generate and is_eval)
+        data_args, effective_stage, template, tokenizer, processor, do_generate=(training_args.predict_with_generate and is_eval)
     )
+
+    # Restore original packing setting
+    if disable_packing_for_eval:
+        data_args.packing = original_packing
     column_names = list(next(iter(dataset)).keys())
     kwargs = {}
     if not data_args.streaming:
@@ -259,6 +285,25 @@ def _get_preprocessed_dataset(
         remove_columns=column_names,
         **kwargs,
     )
+
+    # When using SFT processor during PT stage, we need to:
+    # 1. Remove multimodal columns (PT's DataCollatorForLanguageModeling can't handle them)
+    # 2. Truncate sequences to cutoff_len (SFT processor may produce longer sequences)
+    if stage == "pt" and effective_stage == "sft":
+        multimodal_columns = ["images", "videos", "audios"]
+        columns_to_remove = [col for col in multimodal_columns if col in dataset.column_names]
+        if columns_to_remove:
+            dataset = dataset.remove_columns(columns_to_remove)
+
+        # Truncate sequences to cutoff_len
+        def truncate_to_cutoff(example):
+            cutoff = data_args.cutoff_len
+            for key in ["input_ids", "attention_mask", "labels"]:
+                if key in example and example[key] is not None:
+                    example[key] = example[key][:cutoff]
+            return example
+
+        dataset = dataset.map(truncate_to_cutoff, desc="Truncating to cutoff_len")
 
     if training_args.should_log:
         try:
