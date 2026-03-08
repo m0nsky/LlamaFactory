@@ -24,7 +24,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from peft import PeftModel
-from transformers import DataCollatorForSeq2Seq
+from transformers import DataCollatorForLanguageModeling, DataCollatorForSeq2Seq
 
 from ..extras.constants import AUDIO_PLACEHOLDER, IGNORE_INDEX, IMAGE_PLACEHOLDER, MROPE_MODELS
 from ..extras.packages import is_pillow_available
@@ -88,6 +88,30 @@ def _slice_mm_inputs_for_sample(
             sliced_mm_inputs[key] = None
 
     return sliced_mm_inputs
+
+
+class PtMixedCollator:
+    """Data collator that delegates based on whether the batch already has labels.
+
+    - Batches WITHOUT labels (from PretrainDatasetProcessor): uses DataCollatorForLanguageModeling
+      which creates labels from input_ids (standard CLM loss on all tokens).
+    - Batches WITH labels (from SupervisedDatasetProcessor): uses DataCollatorForSeq2Seq
+      which preserves the existing labels with IGNORE_INDEX masking (loss only on response tokens).
+    """
+
+    def __init__(self, tokenizer, pad_to_multiple_of=None):
+        self.lm_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer, mlm=False, pad_to_multiple_of=pad_to_multiple_of
+        )
+        self.seq2seq_collator = DataCollatorForSeq2Seq(
+            tokenizer=tokenizer, label_pad_token_id=IGNORE_INDEX, pad_to_multiple_of=pad_to_multiple_of
+        )
+
+    def __call__(self, features):
+        if features and "labels" in features[0]:
+            return self.seq2seq_collator(features)
+        else:
+            return self.lm_collator(features)
 
 
 def prepare_4d_attention_mask(attention_mask_with_indices: "torch.Tensor", dtype: "torch.dtype") -> "torch.Tensor":
