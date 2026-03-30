@@ -173,16 +173,16 @@ class MMPluginMixin:
                 "This model does not support audio input. Please check whether the correct `template` is used."
             )
 
-        if self.image_token is not None and processor is None:
+        if len(images) != 0 and processor is None:
             raise ValueError("Processor was not found, please check and update your model file.")
 
-        if self.image_token is not None and image_processor is None:
+        if len(images) != 0 and image_processor is None:
             raise ValueError("Image processor was not found, please check and update your model file.")
 
-        if self.video_token is not None and video_processor is None:
+        if len(videos) != 0 and video_processor is None:
             raise ValueError("Video processor was not found, please check and update your model file.")
 
-        if self.audio_token is not None and feature_extractor is None:
+        if len(audios) != 0 and feature_extractor is None:
             raise ValueError("Audio feature extractor was not found, please check and update your model file.")
 
     def _validate_messages(
