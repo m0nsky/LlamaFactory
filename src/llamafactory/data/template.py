@@ -1712,6 +1712,21 @@ register_template(
 )
 
 
+# Mistral Large 2411 Instruct — true V7 format (mistral-common InstructTokenizerV7)
+# Differs from mistral_small: tool results use raw content between [TOOL_RESULTS] boundary
+# tokens instead of V3-style {"content": ...} JSON wrapper. This matches what the model was
+# pre-trained on and what V7-correct Jinja templates produce at serving time.
+register_template(
+    name="mistral_large_2411",
+    format_user=StringFormatter(slots=["[INST]{{content}}[/INST]"]),
+    format_system=StringFormatter(slots=["[SYSTEM_PROMPT]{{content}}[/SYSTEM_PROMPT]"]),
+    format_function=FunctionFormatter(slots=["[TOOL_CALLS]{{content}}", {"eos_token"}], tool_format="mistral"),
+    format_observation=StringFormatter(slots=["[TOOL_RESULTS]{{content}}[/TOOL_RESULTS]"]),
+    format_tools=ToolFormatter(tool_format="mistral"),
+    format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
+)
+
+
 register_template(
     name="ministral3",
     format_user=StringFormatter(slots=["[INST]{{content}}[/INST]"]),
