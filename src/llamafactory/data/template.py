@@ -1727,6 +1727,19 @@ register_template(
 )
 
 
+# Mistral Small 24B Instruct 2501 — identical V7 format as mistral_large_2411.
+# Separated so future model-specific adjustments don't affect the other.
+register_template(
+    name="mistral_small_2501",
+    format_user=StringFormatter(slots=["[INST]{{content}}[/INST]"]),
+    format_system=StringFormatter(slots=["[SYSTEM_PROMPT]{{content}}[/SYSTEM_PROMPT]"]),
+    format_function=FunctionFormatter(slots=["[TOOL_CALLS]{{content}}", {"eos_token"}], tool_format="mistral"),
+    format_observation=StringFormatter(slots=["[TOOL_RESULTS]{{content}}[/TOOL_RESULTS]"]),
+    format_tools=ToolFormatter(tool_format="mistral"),
+    format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
+)
+
+
 register_template(
     name="ministral3",
     format_user=StringFormatter(slots=["[INST]{{content}}[/INST]"]),
