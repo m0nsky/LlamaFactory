@@ -981,6 +981,26 @@ register_template(
 )
 
 
+# Gemma 3 with JSON tool calling — uses GemmaJsonToolUtils for raw JSON tool calls.
+# Differs from gemma3: proper tool_format, tool results use <tool_response> tags in user turns,
+# no mm_plugin (text-only). Compatible with vLLM (--tool-call-parser llama3_json) and llama.cpp.
+register_template(
+    name="gemma3_tools",
+    format_user=StringFormatter(slots=["<start_of_turn>user\n{{content}}<end_of_turn>\n<start_of_turn>model\n"]),
+    format_assistant=StringFormatter(slots=["{{content}}<end_of_turn>\n"]),
+    format_system=StringFormatter(slots=["{{content}}\n\n"]),
+    format_function=FunctionFormatter(slots=["{{content}}<end_of_turn>\n"], tool_format="gemma_json"),
+    format_observation=StringFormatter(
+        slots=["<start_of_turn>user\n<tool_response>\n{{content}}\n</tool_response><end_of_turn>\n<start_of_turn>model\n"]
+    ),
+    format_tools=ToolFormatter(tool_format="gemma_json"),
+    format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
+    stop_words=["<end_of_turn>"],
+    replace_eos=True,
+    template_class=Llama2Template,
+)
+
+
 register_template(
     name="gemma3n",
     format_user=StringFormatter(slots=["<start_of_turn>user\n{{content}}<end_of_turn>\n<start_of_turn>model\n"]),
