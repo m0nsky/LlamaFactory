@@ -721,8 +721,60 @@ class LFM2ToolUtils(ToolUtils):
         return results if results else content
 
 
+class GemmaJsonToolUtils(ToolUtils):
+    r"""Gemma 3 JSON tool calling format.
+
+    Uses raw JSON objects instead of pythonic or Action/Input format.
+    Compatible with vLLM (--tool-call-parser llama3_json) and llama.cpp (autoparser).
+    """
+
+    @override
+    @staticmethod
+    def tool_formatter(tools: list[dict[str, Any]]) -> str:
+        tool_text = json.dumps(tools, ensure_ascii=False, indent=2)
+        return (
+            "You have access to the following tools. "
+            'To call a tool, respond ONLY with a JSON object in this exact format (no other text):\n'
+            '{"name": "tool_name", "parameters": {"param1": "value1"}}\n\n'
+            "If you need to call multiple tools, respond with one JSON object per line.\n"
+            "If none of the tools are relevant, respond normally without JSON.\n\n"
+            f"Available tools:\n{tool_text}"
+        )
+
+    @override
+    @staticmethod
+    def function_formatter(functions: list["FunctionCall"]) -> str:
+        result = []
+        for name, arguments in functions:
+            args = json.loads(arguments)
+            result.append(json.dumps({"name": name, "parameters": args}, ensure_ascii=False))
+        return "\n".join(result)
+
+    @override
+    @staticmethod
+    def tool_extractor(content: str) -> Union[str, list["FunctionCall"]]:
+        results = []
+        decoder = json.JSONDecoder()
+        content_stripped = content.strip()
+        idx = 0
+        while idx < len(content_stripped):
+            if content_stripped[idx] == "{":
+                try:
+                    obj, end = decoder.raw_decode(content_stripped, idx)
+                    if isinstance(obj, dict) and "name" in obj:
+                        args = obj.get("parameters", obj.get("arguments", {}))
+                        results.append(FunctionCall(obj["name"], json.dumps(args, ensure_ascii=False)))
+                    idx = end
+                except json.JSONDecodeError:
+                    idx += 1
+            else:
+                idx += 1
+        return results if results else content
+
+
 TOOLS = {
     "default": DefaultToolUtils(),
+    "gemma_json": GemmaJsonToolUtils(),
     "glm4": GLM4ToolUtils(),
     "llama3": Llama3ToolUtils(),
     "lfm2": LFM2ToolUtils(),

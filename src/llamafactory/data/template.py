@@ -981,6 +981,26 @@ register_template(
 )
 
 
+# Gemma 3 with JSON tool calling — uses GemmaJsonToolUtils for raw JSON tool calls.
+# Differs from gemma3: proper tool_format, tool results use <tool_response> tags in user turns,
+# no mm_plugin (text-only). Compatible with vLLM (--tool-call-parser llama3_json) and llama.cpp.
+register_template(
+    name="gemma3_tools",
+    format_user=StringFormatter(slots=["<start_of_turn>user\n{{content}}<end_of_turn>\n<start_of_turn>model\n"]),
+    format_assistant=StringFormatter(slots=["{{content}}<end_of_turn>\n"]),
+    format_system=StringFormatter(slots=["{{content}}\n\n"]),
+    format_function=FunctionFormatter(slots=["{{content}}<end_of_turn>\n"], tool_format="gemma_json"),
+    format_observation=StringFormatter(
+        slots=["<start_of_turn>user\n<tool_response>\n{{content}}\n</tool_response><end_of_turn>\n<start_of_turn>model\n"]
+    ),
+    format_tools=ToolFormatter(tool_format="gemma_json"),
+    format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
+    stop_words=["<end_of_turn>"],
+    replace_eos=True,
+    template_class=Llama2Template,
+)
+
+
 register_template(
     name="gemma3n",
     format_user=StringFormatter(slots=["<start_of_turn>user\n{{content}}<end_of_turn>\n<start_of_turn>model\n"]),
@@ -1709,6 +1729,34 @@ register_template(
     format_tools=ToolFormatter(tool_format="mistral"),
     format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
     mm_plugin=get_mm_plugin(name="pixtral", image_token="[IMG]"),
+)
+
+
+# Mistral Large 2411 Instruct — true V7 format (mistral-common InstructTokenizerV7)
+# Differs from mistral_small: tool results use raw content between [TOOL_RESULTS] boundary
+# tokens instead of V3-style {"content": ...} JSON wrapper. This matches what the model was
+# pre-trained on and what V7-correct Jinja templates produce at serving time.
+register_template(
+    name="mistral_large_2411",
+    format_user=StringFormatter(slots=["[INST]{{content}}[/INST]"]),
+    format_system=StringFormatter(slots=["[SYSTEM_PROMPT]{{content}}[/SYSTEM_PROMPT]"]),
+    format_function=FunctionFormatter(slots=["[TOOL_CALLS]{{content}}", {"eos_token"}], tool_format="mistral"),
+    format_observation=StringFormatter(slots=["[TOOL_RESULTS]{{content}}[/TOOL_RESULTS]"]),
+    format_tools=ToolFormatter(tool_format="mistral"),
+    format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
+)
+
+
+# Mistral Small 24B Instruct 2501 — identical V7 format as mistral_large_2411.
+# Separated so future model-specific adjustments don't affect the other.
+register_template(
+    name="mistral_small_2501",
+    format_user=StringFormatter(slots=["[INST]{{content}}[/INST]"]),
+    format_system=StringFormatter(slots=["[SYSTEM_PROMPT]{{content}}[/SYSTEM_PROMPT]"]),
+    format_function=FunctionFormatter(slots=["[TOOL_CALLS]{{content}}", {"eos_token"}], tool_format="mistral"),
+    format_observation=StringFormatter(slots=["[TOOL_RESULTS]{{content}}[/TOOL_RESULTS]"]),
+    format_tools=ToolFormatter(tool_format="mistral"),
+    format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
 )
 
 

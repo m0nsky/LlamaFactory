@@ -173,16 +173,16 @@ class MMPluginMixin:
                 "This model does not support audio input. Please check whether the correct `template` is used."
             )
 
-        if self.image_token is not None and processor is None:
+        if len(images) != 0 and processor is None:
             raise ValueError("Processor was not found, please check and update your model file.")
 
-        if self.image_token is not None and image_processor is None:
+        if len(images) != 0 and image_processor is None:
             raise ValueError("Image processor was not found, please check and update your model file.")
 
-        if self.video_token is not None and video_processor is None:
+        if len(videos) != 0 and video_processor is None:
             raise ValueError("Video processor was not found, please check and update your model file.")
 
-        if self.audio_token is not None and feature_extractor is None:
+        if len(audios) != 0 and feature_extractor is None:
             raise ValueError("Audio feature extractor was not found, please check and update your model file.")
 
     def _validate_messages(
@@ -1571,9 +1571,12 @@ class Qwen2VLPlugin(BasePlugin):
         self._validate_messages(messages, images, videos, audios)
         num_image_tokens, num_video_tokens = 0, 0
         messages = deepcopy(messages)
-        image_processor: BaseImageProcessor = getattr(processor, "image_processor")
+        if processor is not None:
+            image_processor: BaseImageProcessor = getattr(processor, "image_processor")
+            merge_length: int = getattr(image_processor, "merge_size") ** 2
+        else:
+            merge_length = 1
 
-        merge_length: int = getattr(image_processor, "merge_size") ** 2
         if self.expand_mm_tokens:
             mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_thw = mm_inputs.get("image_grid_thw", [])
@@ -1667,11 +1670,14 @@ class Qwen3VLPlugin(Qwen2VLPlugin):
         self._validate_messages(messages, images, videos, audios)
         num_image_tokens, num_video_tokens = 0, 0
         messages = deepcopy(messages)
-        image_processor: BaseImageProcessor = getattr(processor, "image_processor")
-        video_processor: BaseImageProcessor = getattr(processor, "video_processor")
-
-        image_merge_length: int = getattr(image_processor, "merge_size") ** 2
-        video_merge_length: int = getattr(video_processor, "merge_size") ** 2
+        if processor is not None:
+            image_processor: BaseImageProcessor = getattr(processor, "image_processor")
+            video_processor: BaseImageProcessor = getattr(processor, "video_processor")
+            image_merge_length: int = getattr(image_processor, "merge_size") ** 2
+            video_merge_length: int = getattr(video_processor, "merge_size") ** 2
+        else:
+            image_merge_length = 1
+            video_merge_length = 1
         if self.expand_mm_tokens:
             mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_thw = mm_inputs.get("image_grid_thw", [])
@@ -1781,9 +1787,12 @@ class GLM4VPlugin(Qwen2VLPlugin):
         self._validate_messages(messages, images, videos, audios)
         num_image_tokens, num_video_tokens = 0, 0
         messages = deepcopy(messages)
-        image_processor: BaseImageProcessor = getattr(processor, "image_processor")
+        if processor is not None:
+            image_processor: BaseImageProcessor = getattr(processor, "image_processor")
+            merge_length: int = getattr(image_processor, "merge_size") ** 2
+        else:
+            merge_length = 1
 
-        merge_length: int = getattr(image_processor, "merge_size") ** 2
         if self.expand_mm_tokens:
             mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_thw = mm_inputs.get("image_grid_thw", [])

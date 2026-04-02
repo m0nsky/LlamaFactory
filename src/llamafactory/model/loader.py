@@ -203,14 +203,16 @@ def load_model(
             logger.info_rank0(f"Loaded valuehead from checkpoint: {vhead_path}")
 
     # Conv3D is not recommended when using torch 2.9.x
-    if is_torch_version_greater_than("2.9.0") and not is_torch_version_greater_than("2.10.0"):
-        if any(isinstance(m, torch.nn.Conv3d) for m in model.modules()):
-            raise ValueError(
-                "Unsupported torch version detected: torch 2.9.x with Conv3D. "
-                "This combination is known to cause severe performance regression. "
-                "Please downgrade torch to <2.9 or remove Conv3D. "
-                "See https://github.com/pytorch/pytorch/issues/166122"
-            )
+    # Disabled: vision encoder is frozen during text-only SFT, Conv3D perf regression doesn't apply
+    # See https://github.com/pytorch/pytorch/issues/166122
+    # if is_torch_version_greater_than("2.9.0") and not is_torch_version_greater_than("2.10.0"):
+    #     if any(isinstance(m, torch.nn.Conv3d) for m in model.modules()):
+    #         raise ValueError(
+    #             "Unsupported torch version detected: torch 2.9.x with Conv3D. "
+    #             "This combination is known to cause severe performance regression. "
+    #             "Please downgrade torch to <2.9 or remove Conv3D. "
+    #             "See https://github.com/pytorch/pytorch/issues/166122"
+    #         )
 
     if not is_trainable:
         model.requires_grad_(False)
