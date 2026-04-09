@@ -24,7 +24,11 @@ from transformers.modeling_utils import is_fsdp_enabled
 from ..extras import logging
 from ..extras.misc import infer_optim_dtype
 from ..extras.packages import is_transformers_version_greater_than
-from .model_utils.attention import configure_attn_implementation, print_attn_implementation
+from .model_utils.attention import (
+    apply_attn_implementation_post_load,
+    configure_attn_implementation,
+    print_attn_implementation,
+)
 from .model_utils.checkpointing import prepare_model_for_training
 from .model_utils.embedding import resize_embedding_layer
 from .model_utils.kv_cache import configure_kv_cache
@@ -197,6 +201,13 @@ def patch_model(
     is_trainable: bool,
     add_valuehead: bool,
 ) -> None:
+    # Post-load attention fix: propagate _attn_implementation to nested configs
+    # (text_config/vision_config/audio_config). Needed because Unsloth re-reads
+    # the config from disk on load and our Python-side patch is lost. For
+    # composite models like Gemma 4, the runtime attention dispatch reads from
+    # text_config, so without this the model keeps defaulting to fa2.
+    apply_attn_implementation_post_load(model, model_args)
+
     gen_config = model.generation_config  # check and fix generation config
     if not gen_config.do_sample and (
         (gen_config.temperature is not None and gen_config.temperature != 1.0)

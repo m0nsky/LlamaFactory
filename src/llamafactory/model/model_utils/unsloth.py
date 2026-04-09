@@ -15,6 +15,7 @@
 from typing import TYPE_CHECKING, Any, Optional
 
 from ...extras import logging
+from ...extras.constants import AttentionFunction
 from ...extras.misc import get_current_device
 
 
@@ -33,7 +34,7 @@ def _get_unsloth_kwargs(
     model_args: "ModelArguments",
     finetuning_args: "FinetuningArguments",
 ) -> dict[str, Any]:
-    return {
+    kwargs = {
         "model_name": model_name_or_path,
         "max_seq_length": model_args.model_max_length or 4096,
         "dtype": model_args.compute_dtype,
@@ -46,6 +47,20 @@ def _get_unsloth_kwargs(
         "trust_remote_code": model_args.trust_remote_code,
         "use_gradient_checkpointing": "unsloth",
     }
+
+    # Pass attention implementation through to Unsloth via **kwargs. Unsloth
+    # forwards this to the underlying HF from_pretrained call. Needed because
+    # Unsloth re-reads config.json from disk and does not honor the config
+    # object we patched in configure_attn_implementation().
+    if model_args.flash_attn == AttentionFunction.SDPA:
+        kwargs["attn_implementation"] = "sdpa"
+    elif model_args.flash_attn == AttentionFunction.FA2:
+        kwargs["attn_implementation"] = "flash_attention_2"
+    elif model_args.flash_attn == AttentionFunction.DISABLED:
+        kwargs["attn_implementation"] = "eager"
+    # AUTO: don't set; let Unsloth decide based on its own default.
+
+    return kwargs
 
 
 def load_unsloth_pretrained_model(

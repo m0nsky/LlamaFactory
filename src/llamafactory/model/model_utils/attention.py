@@ -20,7 +20,7 @@ from ...extras.packages import is_torch_version_greater_than
 
 
 if TYPE_CHECKING:
-    from transformers import PretrainedConfig
+    from transformers import PretrainedConfig, PreTrainedModel
 
     from ...hparams import ModelArguments
 
@@ -137,3 +137,35 @@ def print_attn_implementation(config: "PretrainedConfig") -> None:
         logger.info_rank0("Using torch SDPA for faster training and inference.")
     else:
         logger.info_rank0("Using vanilla attention implementation.")
+
+
+def apply_attn_implementation_post_load(model: "PreTrainedModel", model_args: "ModelArguments") -> None:
+    r"""Post-load fix: force _attn_implementation on the loaded model's nested configs.
+
+    Needed because some loader paths (notably Unsloth's FastLanguageModel.from_pretrained)
+    re-read the model config from disk and ignore the Python config object we patched in
+    configure_attn_implementation(). For composite models like Gemma 4 whose attention
+    layers read self.config._attn_implementation at runtime (where self.config is the
+    text_config, not the outer config), this propagation is required or the attention
+    dispatch will fall back to the transformers default (flash_attention_2) and crash
+    on large head dimensions.
+    """
+    if model_args.flash_attn == AttentionFunction.AUTO:
+        return
+    elif model_args.flash_attn == AttentionFunction.DISABLED:
+        impl = "eager"
+    elif model_args.flash_attn == AttentionFunction.SDPA:
+        impl = "sdpa"
+    elif model_args.flash_attn == AttentionFunction.FA2:
+        impl = "flash_attention_2"
+    else:
+        return
+
+    cfg = model.config
+    setattr(cfg, "_attn_implementation", impl)
+    for sub_name in ("text_config", "vision_config", "audio_config"):
+        sub = getattr(cfg, sub_name, None)
+        if sub is not None:
+            setattr(sub, "_attn_implementation", impl)
+
+    logger.info_rank0(f"Post-load: forced _attn_implementation='{impl}' on model config and nested configs.")
