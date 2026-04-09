@@ -1046,6 +1046,29 @@ register_template(
 )
 
 
+# Text-only variant of gemma4 (no mm_plugin). Use this template when fine-tuning
+# on text-only datasets to avoid "Processor was not found" errors from the
+# multimodal plugin. All reasoning, tool-use, and thought-masking features
+# are preserved; only image/video processing is disabled.
+register_template(
+    name="gemma4_text",
+    format_user=StringFormatter(slots=["<|turn>user\n{{content}}<turn|>\n<|turn>model\n"]),
+    format_assistant=StringFormatter(slots=["{{content}}<turn|>\n"]),
+    format_system=StringFormatter(slots=["<|turn>system\n<|think|>{{content}}<turn|>\n"]), #  default thought signal contained
+    format_observation=StringFormatter(
+        slots=["<|turn>tool\n{{content}}<turn|>\n<|turn>model\n"]
+    ),
+    format_tools=ToolFormatter(tool_format="gemma4"),
+    format_function=FunctionFormatter(slots=["<|tool>{{content}}<tool|>"], tool_format="gemma4"),
+    format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
+    stop_words=["<turn|>"],
+    default_system="You are a helpful assistant.", # important for thinking
+    thought_words=("<|channel>thought\n", "<channel|>"),
+    replace_eos=True,
+    template_class=ReasoningTemplate,
+)
+
+
 register_template(
     name="glm4",
     format_user=StringFormatter(slots=["<|user|>\n{{content}}<|assistant|>"]),
