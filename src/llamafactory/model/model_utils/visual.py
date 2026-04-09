@@ -44,9 +44,11 @@ class CompositeModel:
     language_model_keys: list[str]
     lora_conflict_keys: list[str]
 
-    def get_projector(self, module: "torch.nn.Module") -> "torch.nn.Module":
+    def get_projector(self, module: "torch.nn.Module") -> Optional["torch.nn.Module"]:
         for key in self.projector_key.split("."):
-            module = getattr(module, key)
+            module = getattr(module, key, None)
+            if module is None:
+                return None
 
         return module
 
@@ -138,6 +140,13 @@ def autocast_projector_dtype(model: "PreTrainedModel", model_args: "ModelArgumen
         if model_type in COMPOSITE_MODELS:
             mm_projector = COMPOSITE_MODELS[model_type].get_projector(model)
         else:
+            return
+
+        if mm_projector is None:
+            logger.info_rank0(
+                f"No multimodal projector found on {model_type} model "
+                "(text-only variant, e.g. unsloth bnb-4bit). Skipping projector dtype cast."
+            )
             return
 
         logger.info_rank0(f"Casting multimodal projector outputs in {model_args.compute_dtype}.")
