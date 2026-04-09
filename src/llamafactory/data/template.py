@@ -1069,6 +1069,29 @@ register_template(
 )
 
 
+# Text-only, no-thinking variant of gemma4. Use this template when fine-tuning on
+# text-only datasets that do NOT contain reasoning/thought blocks. Differences
+# from gemma4_text:
+#   - <|think|> token removed from format_system (no reasoning mode activation)
+#   - thought_words removed (nothing to mask)
+#   - template_class defaults to Template (no ReasoningTemplate)
+register_template(
+    name="gemma4_text_nothink",
+    format_user=StringFormatter(slots=["<|turn>user\n{{content}}<turn|>\n<|turn>model\n"]),
+    format_assistant=StringFormatter(slots=["{{content}}<turn|>\n"]),
+    format_system=StringFormatter(slots=["<|turn>system\n{{content}}<turn|>\n"]),
+    format_observation=StringFormatter(
+        slots=["<|turn>tool\n{{content}}<turn|>\n<|turn>model\n"]
+    ),
+    format_tools=ToolFormatter(tool_format="gemma4"),
+    format_function=FunctionFormatter(slots=["<|tool>{{content}}<tool|>"], tool_format="gemma4"),
+    format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
+    stop_words=["<turn|>"],
+    default_system="You are a helpful assistant.",
+    replace_eos=True,
+)
+
+
 register_template(
     name="glm4",
     format_user=StringFormatter(slots=["<|user|>\n{{content}}<|assistant|>"]),
