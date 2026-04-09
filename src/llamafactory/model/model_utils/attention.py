@@ -57,6 +57,19 @@ def configure_attn_implementation(config: "PretrainedConfig", model_args: "Model
                 "Gemma-2 should use soft-capping attention, while the SDPA attention does not support it."
             )
 
+    if getattr(config, "model_type", None) == "gemma4":
+        # Gemma 4's full_attention layers use global_head_dim=512, which exceeds
+        # FlashAttention-2's 256 head_dim limit. Force SDPA for auto/fa2 requests.
+        if model_args.flash_attn in (AttentionFunction.AUTO, AttentionFunction.FA2):
+            if model_args.flash_attn == AttentionFunction.FA2:
+                logger.warning_rank0(
+                    "Gemma 4 has heterogeneous attention head dimensions (global_head_dim=512) "
+                    "that exceed FlashAttention-2's 256 limit. Forcing `flash_attn: sdpa`."
+                )
+            else:
+                logger.info_rank0("Gemma 4 auto attention: using SDPA (FA2 unsupported for head_dim > 256).")
+            model_args.flash_attn = AttentionFunction.SDPA
+
     if getattr(config, "model_type", None) in ["youtu", "youtu_vl"]:
         if model_args.flash_attn in (AttentionFunction.AUTO, AttentionFunction.SDPA):
             logger.warning_rank0("Youtu-VL does not support SDPA, forcing eager attention.")
@@ -97,6 +110,17 @@ def configure_attn_implementation(config: "PretrainedConfig", model_args: "Model
             setattr(config.vision_config, "_attn_implementation", requested_attn_implementation)
         if hasattr(config, "text_config"):
             setattr(config.text_config, "_attn_implementation", requested_attn_implementation)
+    elif getattr(config, "model_type", None) == "gemma4":
+        # Gemma 4 is a composite model with nested text/vision/audio configs.
+        # The text attention reads _attn_implementation from text_config (not the
+        # outer config), so we propagate to all existing sub-configs.
+        setattr(config, "_attn_implementation", requested_attn_implementation)
+        if getattr(config, "text_config", None) is not None:
+            setattr(config.text_config, "_attn_implementation", requested_attn_implementation)
+        if getattr(config, "vision_config", None) is not None:
+            setattr(config.vision_config, "_attn_implementation", requested_attn_implementation)
+        if getattr(config, "audio_config", None) is not None:
+            setattr(config.audio_config, "_attn_implementation", requested_attn_implementation)
     else:
         setattr(config, "_attn_implementation", requested_attn_implementation)
 
