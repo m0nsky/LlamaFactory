@@ -1069,12 +1069,14 @@ register_template(
 )
 
 
-# Text-only, no-thinking variant of gemma4. Use this template when fine-tuning on
-# text-only datasets that do NOT contain reasoning/thought blocks. Differences
-# from gemma4_text:
-#   - <|think|> token removed from format_system (no reasoning mode activation)
-#   - thought_words removed (nothing to mask)
-#   - template_class defaults to Template (no ReasoningTemplate)
+# Text-only, no-thinking variant of gemma4. Identical to gemma4_text but
+# without the <|think|> token in format_system, so the model operates in
+# non-thinking mode. Uses ReasoningTemplate with thought_words so the empty
+# thought channel block (<|channel>thought\n<channel|>) that Gemma 4 31B
+# always emits is automatically prepended and masked (no loss on channel tokens).
+# See: https://ai.google.dev/gemma/docs/core/model_card_4
+#
+# Usage: set `enable_thinking: false` in YAML config.
 register_template(
     name="gemma4_text_nothink",
     format_user=StringFormatter(slots=["<|turn>user\n{{content}}<turn|>\n<|turn>model\n"]),
@@ -1088,7 +1090,9 @@ register_template(
     format_prefix=EmptyFormatter(slots=[{"bos_token"}]),
     stop_words=["<turn|>"],
     default_system="You are a helpful assistant.",
+    thought_words=("<|channel>thought\n", "<channel|>"),
     replace_eos=True,
+    template_class=ReasoningTemplate,
 )
 
 
