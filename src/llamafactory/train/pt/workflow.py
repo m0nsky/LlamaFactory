@@ -43,7 +43,7 @@ def run_pt(
     template = get_template_and_fix_tokenizer(tokenizer, data_args)
     dataset_module = get_dataset(template, model_args, data_args, training_args, stage="pt", **tokenizer_module)
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
-    data_collator = PtMixedCollator(tokenizer=tokenizer)
+    data_collator = PtMixedCollator(tokenizer=tokenizer, model_type=getattr(model.config, "model_type", None))
 
     # Initialize our Trainer
     trainer = CustomTrainer(

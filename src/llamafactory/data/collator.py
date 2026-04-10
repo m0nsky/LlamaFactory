@@ -99,19 +99,27 @@ class PtMixedCollator:
       which preserves the existing labels with IGNORE_INDEX masking (loss only on response tokens).
     """
 
-    def __init__(self, tokenizer, pad_to_multiple_of=None):
+    def __init__(self, tokenizer, model_type=None, pad_to_multiple_of=None):
         self.lm_collator = DataCollatorForLanguageModeling(
             tokenizer=tokenizer, mlm=False, pad_to_multiple_of=pad_to_multiple_of
         )
         self.seq2seq_collator = DataCollatorForSeq2Seq(
             tokenizer=tokenizer, label_pad_token_id=IGNORE_INDEX, pad_to_multiple_of=pad_to_multiple_of
         )
+        self.model_type = model_type
 
     def __call__(self, features):
         if features and "labels" in features[0]:
-            return self.seq2seq_collator(features)
+            batch = self.seq2seq_collator(features)
         else:
-            return self.lm_collator(features)
+            batch = self.lm_collator(features)
+
+        # Gemma 4 requires mm_token_type_ids during training to build the causal mask.
+        # For text-only data, all tokens are text type (0).
+        if self.model_type == "gemma4" and "mm_token_type_ids" not in batch:
+            batch["mm_token_type_ids"] = torch.zeros_like(batch["input_ids"])
+
+        return batch
 
 
 def prepare_4d_attention_mask(attention_mask_with_indices: "torch.Tensor", dtype: "torch.dtype") -> "torch.Tensor":
