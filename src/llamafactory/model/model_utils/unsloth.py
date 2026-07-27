@@ -14,6 +14,8 @@
 
 from typing import TYPE_CHECKING, Any, Optional
 
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
 from ...extras import logging
 from ...extras.constants import AttentionFunction
 from ...extras.misc import get_current_device
@@ -26,6 +28,78 @@ if TYPE_CHECKING:
 
 
 logger = logging.get_logger(__name__)
+
+# The fields `tokenizers.AddedToken` actually accepts. A dict carrying anything else is not a
+# serialized token, no matter what it holds under "content".
+_ADDED_TOKEN_FIELDS = frozenset({"content", "single_word", "lstrip", "rstrip", "normalized", "special"})
+
+# Captured at import time. This module is pulled in by llamafactory.model.loader, long before any
+# `from unsloth import ...` executes, so this is the stock transformers implementation. Fetched
+# defensively: if a future transformers drops the method there is nothing to repair, and failing
+# here would break importing LlamaFactory at all.
+_STOCK_CONVERT_ADDED_TOKENS = getattr(PreTrainedTokenizerBase, "convert_added_tokens", None)
+
+
+def _fix_unsloth_convert_added_tokens() -> None:
+    r"""Reinstall unsloth's `convert_added_tokens` patch with a strict predicate.
+
+    unsloth_zoo (temporary_patches/misc.py) replaces `PreTrainedTokenizerBase.convert_added_tokens`
+    with a version that turns *any* dict holding a string "content" key into an `AddedToken`:
+
+        if isinstance(obj, dict) and "content" in obj and "__type" not in obj and isinstance(obj["content"], str):
+            return AddedToken(**obj)
+
+    That method is bidirectional. `save_pretrained` calls it with `save=True` precisely to turn
+    `AddedToken` objects *into* plain dicts so `json.dumps` can encode them; the patch performs the
+    opposite conversion on the way out and ignores `save` entirely. Any unrelated nested dict that
+    happens to carry a string "content" therefore becomes an `AddedToken` during the checkpoint
+    write, and the save dies with `TypeError: Object of type AddedToken is not JSON serializable`.
+
+    google/gemma-4-E4B-it trips this as of revision ee0ef602 (2026-07-20), which added
+    `response_template` to tokenizer_config.json: its `fields.content`, `fields.thinking` and
+    `fields.tool_calls` entries each carry a string "content". LlamaFactory loads the tokenizer
+    before unsloth is imported, so the patch is only live on the way out - training runs fine and
+    then dies on the first checkpoint.
+
+    We reinstall it matching only dicts whose keys are all genuine `AddedToken` fields. That keeps
+    unsloth's intent (special-token dicts that lack `"__type": "AddedToken"`) while leaving foreign
+    metadata alone in both directions. Note that merely adding `and not save` is *not* enough: if
+    the tokenizer is ever loaded while the patch is already live, the round trip rewrites
+    `response_template.fields.content` to `{"__type": "AddedToken", ...}` and silently drops the
+    real contents.
+
+    TODO: delete this once unsloth_zoo's own predicate respects `save` or narrows its match.
+    Present and byte-identical in unsloth_zoo 2026.4.9 (installed), 2026.7.6 (latest release) and
+    GitHub main/nightly as of 2026-07-27.
+    """
+    from transformers.tokenization_utils_base import AddedToken
+
+    if _STOCK_CONVERT_ADDED_TOKENS is None:
+        return
+
+    if hasattr(_STOCK_CONVERT_ADDED_TOKENS, "_unsloth_patched"):
+        logger.warning_rank0(
+            "Unsloth was imported before LlamaFactory, cannot recover the original "
+            "`convert_added_tokens`. Saving checkpoints may fail."
+        )
+        return
+
+    def convert_added_tokens(cls, obj: Any, save: bool = False, add_type_field: bool = True) -> Any:
+        if (
+            isinstance(obj, dict)
+            and "content" in obj
+            and "__type" not in obj
+            and isinstance(obj["content"], str)
+            and _ADDED_TOKEN_FIELDS.issuperset(obj)
+        ):
+            return AddedToken(**obj)
+
+        # Recurses through `cls.convert_added_tokens`, i.e. back into this function.
+        return _STOCK_CONVERT_ADDED_TOKENS.__func__(cls, obj, save=save, add_type_field=add_type_field)
+
+    # Stops unsloth reinstalling its own version if the patches are ever applied again.
+    convert_added_tokens._unsloth_patched = True
+    PreTrainedTokenizerBase.convert_added_tokens = classmethod(convert_added_tokens)
 
 
 def _get_unsloth_kwargs(
@@ -69,6 +143,7 @@ def load_unsloth_pretrained_model(
     r"""Optionally load pretrained model with unsloth. Used in training."""
     from unsloth import FastLanguageModel  # type: ignore
 
+    _fix_unsloth_convert_added_tokens()
     unsloth_kwargs = _get_unsloth_kwargs(config, model_args.model_name_or_path, model_args, finetuning_args)
     try:
         model, _ = FastLanguageModel.from_pretrained(**unsloth_kwargs)
@@ -86,6 +161,7 @@ def get_unsloth_peft_model(
     r"""Get the peft model for the pretrained model with unsloth. Used in training."""
     from unsloth import FastLanguageModel  # type: ignore
 
+    _fix_unsloth_convert_added_tokens()
     unsloth_peft_kwargs = {
         "model": model,
         "max_seq_length": model_args.model_max_length,
@@ -103,6 +179,7 @@ def load_unsloth_peft_model(
     r"""Load peft model with unsloth. Used in both training and inference."""
     from unsloth import FastLanguageModel  # type: ignore
 
+    _fix_unsloth_convert_added_tokens()
     unsloth_kwargs = _get_unsloth_kwargs(config, model_args.adapter_name_or_path[0], model_args, finetuning_args)
     try:
         if not is_trainable:
