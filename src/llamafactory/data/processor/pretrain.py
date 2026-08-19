@@ -26,7 +26,24 @@ from .processor_utils import DatasetProcessor
 class PretrainDatasetProcessor(DatasetProcessor):
     def preprocess_dataset(self, examples: dict[str, list[Any]]) -> dict[str, list[Any]]:
         # build grouped texts with format `X1 X2 X3 ...` if packing is enabled
-        eos_token = "<|end_of_text|>" if self.data_args.template == "llama3" else self.tokenizer.eos_token
+
+        # This token separates documents in the pretraining stream, so it must be the model's real
+        # end-of-sequence token — not the chat turn terminator.
+        #
+        # Templates with `replace_eos=True` overwrite `tokenizer.eos_token` with their first stop
+        # word, so by the time we get here it is a conversational control token: `<end_of_turn>`
+        # for gemma/gemma3, `<turn|>` for gemma4. With packing enabled, loss is computed across
+        # the joins, which trains the model that its own stop token is followed by more text — and
+        # a model trained that way does not stop when generating.
+        #
+        # llama3 already carries this exception. Gemma needs the same: Google's tokenizer_config
+        # sets `eos_token` to `<eos>`, and reserves `<turn|>` / `<end_of_turn>` for turn structure.
+        if self.data_args.template == "llama3":
+            eos_token = "<|end_of_text|>"
+        elif self.data_args.template is not None and self.data_args.template.startswith("gemma"):
+            eos_token = "<eos>"
+        else:
+            eos_token = self.tokenizer.eos_token
         text_examples = [messages[0]["content"] + eos_token for messages in examples["_prompt"]]
 
         if not self.data_args.packing:
