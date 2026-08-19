@@ -498,7 +498,25 @@ def get_train_args(args: dict[str, Any] | list[str] | None = None) -> _TRAIN_CLS
 
     model_args.device_map = {"": get_current_device()}
     model_args.block_diag_attn = data_args.neat_packing
-    # Auto-enable packing for PT stage if not explicitly set
+    # Auto-enable packing for PT stage if not explicitly set.
+    #
+    # DataArguments.__post_init__ does `if self.packing: self.cutoff_len -= 1`, but it runs while
+    # parsing the YAML — before we get here. So when packing is set explicitly it has already been
+    # applied, and when we auto-enable it below it has not. The branch re-applies it so both paths
+    # end up with the same cutoff_len.
+    #
+    # Why the -1 exists at all: SFT packing emits sequences of cutoff_len + 1 tokens (asserted in
+    # supervised.py), so the decrement makes a requested 4096 come out as 4096. PT packing slices at
+    # exactly block_size = cutoff_len and has no such +1, so for PT the decrement is not cancelling
+    # anything — PT blocks end up one token short (4095 for a configured 4096).
+    #
+    # TODO: make the decrement stage-aware so PT gets the block size that was actually configured.
+    # It cannot simply move into __post_init__, which has no access to finetuning_args.stage; the
+    # likely shape is to stop decrementing in __post_init__ and apply it here for SFT only, once
+    # both packing and stage are known.
+    #
+    # Enabling packing for PT is also what surfaced the "Cannot find sufficient samples" error on
+    # datasets smaller than one block, fixed separately in pretrain.py.
     was_packing_none = data_args.packing is None
     data_args.packing = data_args.packing if data_args.packing is not None else finetuning_args.stage == "pt"
     if was_packing_none and data_args.packing:

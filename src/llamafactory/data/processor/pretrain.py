@@ -37,7 +37,19 @@ class PretrainDatasetProcessor(DatasetProcessor):
         # a model trained that way does not stop when generating.
         #
         # llama3 already carries this exception. Gemma needs the same: Google's tokenizer_config
-        # sets `eos_token` to `<eos>`, and reserves `<turn|>` / `<end_of_turn>` for turn structure.
+        # declares `eos_token: <eos>` and `eot_token: <turn|>` as separate fields, and its
+        # chat_template.jinja uses the turn tokens only — `<eos>` never appears there.
+        #
+        # Note what this does and does not achieve. Both tokens terminate generation (gemma4's
+        # generation_config lists eos_token_id [1, 106, 50]), so this does not change what stops
+        # the model. With packing on, loss is still computed across the joins, so the model still
+        # learns that *something* is followed by more text — this moves that erosion off `<turn|>`,
+        # which the chat format requires the model to emit to end a turn, and onto `<eos>`, which
+        # it does not. Removing the erosion entirely needs `neat_packing` (block-diagonal attention,
+        # currently SFT-only) or `packing: false`.
+        #
+        # 41 of ~120 templates set replace_eos=True, so this affects far more than gemma —
+        # llama4 among them. Only llama3 and gemma are handled here.
         if self.data_args.template == "llama3":
             eos_token = "<|end_of_text|>"
         elif self.data_args.template is not None and self.data_args.template.startswith("gemma"):
