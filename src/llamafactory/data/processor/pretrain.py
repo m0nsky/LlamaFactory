@@ -15,11 +15,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import defaultdict
 from dataclasses import dataclass
 from itertools import chain
 from typing import Any
 
-from .processor_utils import DatasetProcessor
+from ...extras.constants import IGNORE_INDEX
+from .processor_utils import DatasetProcessor, greedy_knapsack
 
 
 @dataclass
@@ -45,8 +47,8 @@ class PretrainDatasetProcessor(DatasetProcessor):
         # the model. With packing on, loss is still computed across the joins, so the model still
         # learns that *something* is followed by more text — this moves that erosion off `<turn|>`,
         # which the chat format requires the model to emit to end a turn, and onto `<eos>`, which
-        # it does not. Removing the erosion entirely needs `neat_packing` (block-diagonal attention,
-        # currently SFT-only) or `packing: false`.
+        # it does not. Removing the erosion entirely needs `neat_packing` (see `_neat_pack`) or
+        # `packing: false`.
         #
         # 41 of ~120 templates set replace_eos=True, so this affects far more than gemma —
         # llama4 among them. Only llama3 and gemma are handled here.
@@ -77,6 +79,9 @@ class PretrainDatasetProcessor(DatasetProcessor):
         # Those tokens carry enormous loss and dominate the gradient.
         prefix_ids = self.template._convert_elements_to_ids(self.tokenizer, self.template.format_prefix.apply())
 
+        if self.data_args.packing and self.data_args.neat_packing:
+            return self._neat_pack(text_examples, prefix_ids)
+
         if not self.data_args.packing:
             # Leave room for the prefix so a document still ends up exactly `cutoff_len` long.
             result = self.tokenizer(
@@ -105,6 +110,70 @@ class PretrainDatasetProcessor(DatasetProcessor):
             result = {"input_ids": input_ids, "attention_mask": [[1] * len(ids) for ids in input_ids]}
 
         return result
+
+    def _neat_pack(self, text_examples: list[str], prefix_ids: list[int]) -> dict[str, list[Any]]:
+        r"""Pack whole documents into blocks that do not attend to or predict across each other.
+
+        Plain packing concatenates every document into one stream and re-slices it at fixed
+        offsets, so a block is generally the tail of one document glued to the head of the next.
+        The model then attends across that join and is trained to predict the next document from
+        the previous one.
+
+        Here each block instead holds whole documents, and `position_ids` restart at 0 for each.
+        Transformers derives a block-diagonal mask from exactly that signal
+        (`masking_utils.find_packed_sequence_indices`), which is why this emits no `attention_mask`
+        — supplying one suppresses the detection.
+
+        This is deliberately not LlamaFactory's `prepare_4d_attention_mask` route that SFT uses.
+        A pre-built 4D mask is returned as-is by transformers for *every* layer type, so on a
+        hybrid-attention model it also overwrites the sliding-window mask: measured on gemma4
+        (`sliding_window` 512) at sequence length 1200, the 4D route let a sliding layer attend to
+        700 tokens instead of 512, while this route correctly gave 512 and still respected the
+        document boundary.
+        """
+        block_size = self.data_args.cutoff_len
+        content_size = block_size - len(prefix_ids)
+        tokenized_examples = self.tokenizer(text_examples, add_special_tokens=False)["input_ids"]
+
+        # Split documents longer than a block rather than dropping them (what SFT packing does) or
+        # truncating them (what unpacked PT does). Every piece opens with the prefix, so a
+        # continuation still starts the way the model expects a sequence to start.
+        pieces: list[list[int]] = []
+        for input_ids in tokenized_examples:
+            for start in range(0, max(len(input_ids), 1), content_size):
+                pieces.append(prefix_ids + input_ids[start : start + content_size])
+
+        lengths = [len(piece) for piece in pieces]
+        length2indexes = defaultdict(list)
+        for index, length in enumerate(lengths):
+            length2indexes[length].append(index)
+
+        model_inputs = defaultdict(list)
+        for knapsack in greedy_knapsack(lengths, block_size):
+            packed_input_ids, packed_position_ids, packed_labels = [], [], []
+            for length in knapsack:
+                piece = pieces[length2indexes[length].pop()]
+                packed_input_ids += piece
+                packed_position_ids += list(range(len(piece)))
+                # The first token of a document would otherwise be predicted from the last token of
+                # the previous one — a target the block-diagonal mask has already cut the context
+                # for. (For the first document in a block the label is dropped by the loss shift
+                # anyway, so masking it changes nothing.)
+                packed_labels += [IGNORE_INDEX] + piece[1:]
+
+            pad_length = block_size - len(packed_input_ids)
+            if pad_length > 0:
+                # Padding restarts the positions too, so it forms its own sequence and real tokens
+                # cannot attend to it. Its labels are ignored, so it contributes no loss.
+                packed_input_ids += [self.tokenizer.pad_token_id] * pad_length
+                packed_position_ids += list(range(pad_length))
+                packed_labels += [IGNORE_INDEX] * pad_length
+
+            model_inputs["input_ids"].append(packed_input_ids)
+            model_inputs["position_ids"].append(packed_position_ids)
+            model_inputs["labels"].append(packed_labels)
+
+        return model_inputs
 
     def print_data_example(self, example: dict[str, list[int]]) -> None:
         print("input_ids:\n{}".format(example["input_ids"]))

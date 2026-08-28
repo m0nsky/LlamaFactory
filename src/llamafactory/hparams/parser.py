@@ -299,8 +299,8 @@ def get_train_args(args: dict[str, Any] | list[str] | None = None) -> _TRAIN_CLS
         if training_args.predict_with_generate:
             raise ValueError("`predict_with_generate` cannot be set as True except SFT.")
 
-        if data_args.neat_packing:
-            raise ValueError("`neat_packing` cannot be set as True except SFT.")
+        if data_args.neat_packing and finetuning_args.stage != "pt":
+            raise ValueError("`neat_packing` cannot be set as True except SFT and PT.")
 
         if data_args.train_on_prompt or data_args.mask_history:
             raise ValueError("`train_on_prompt` or `mask_history` cannot be set as True except SFT.")

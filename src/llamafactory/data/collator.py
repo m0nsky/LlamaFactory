@@ -99,7 +99,7 @@ class PtMixedCollator:
       which preserves the existing labels with IGNORE_INDEX masking (loss only on response tokens).
     """
 
-    def __init__(self, tokenizer, model_type=None, pad_to_multiple_of=None):
+    def __init__(self, tokenizer, model_type=None, pad_to_multiple_of=None, neat_packing=False):
         self.lm_collator = DataCollatorForLanguageModeling(
             tokenizer=tokenizer, mlm=False, pad_to_multiple_of=pad_to_multiple_of
         )
@@ -107,9 +107,22 @@ class PtMixedCollator:
             tokenizer=tokenizer, label_pad_token_id=IGNORE_INDEX, pad_to_multiple_of=pad_to_multiple_of
         )
         self.model_type = model_type
+        self.neat_packing = neat_packing
 
     def __call__(self, features):
-        if features and "labels" in features[0]:
+        if self.neat_packing:
+            # `PretrainDatasetProcessor._neat_pack` already emits fixed-length blocks with labels
+            # and per-document `position_ids`, so there is nothing to pad or derive.
+            #
+            # No `attention_mask` is produced on purpose: transformers only looks for the packed
+            # format when the mask is absent (`_preprocess_mask_arguments` requires
+            # `attention_mask is None`), and supplying an all-ones mask would silently turn the
+            # block-diagonal mask back into a plain causal one across the whole block.
+            batch = {
+                key: torch.tensor([feature[key] for feature in features], dtype=torch.long)
+                for key in ("input_ids", "labels", "position_ids")
+            }
+        elif features and "labels" in features[0]:
             batch = self.seq2seq_collator(features)
         else:
             batch = self.lm_collator(features)

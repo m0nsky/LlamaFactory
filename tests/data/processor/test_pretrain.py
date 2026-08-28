@@ -19,6 +19,7 @@ from transformers import AutoTokenizer
 
 from llamafactory.data.processor.pretrain import PretrainDatasetProcessor
 from llamafactory.data.template import get_template_and_fix_tokenizer
+from llamafactory.extras.constants import IGNORE_INDEX
 from llamafactory.hparams import DataArguments
 
 
@@ -176,3 +177,103 @@ def test_packing_cutoff_len_is_stage_aware(
 
     _, data_args, _, _, _ = get_train_args(args)
     assert data_args.cutoff_len == expected_cutoff_len
+
+
+def _neat_processor(cutoff_len: int) -> PretrainDatasetProcessor:
+    tokenizer = AutoTokenizer.from_pretrained(TINY_LLAMA3)
+    data_args = DataArguments(template="llama3", cutoff_len=cutoff_len, neat_packing=True)
+    data_args.cutoff_len = cutoff_len
+    template = get_template_and_fix_tokenizer(tokenizer, data_args)
+    return PretrainDatasetProcessor(template=template, tokenizer=tokenizer, processor=None, data_args=data_args)
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_neat_packing_emits_no_attention_mask():
+    r"""Transformers only detects the packed format when the mask is absent."""
+    processor = _neat_processor(64)
+    result = processor.preprocess_dataset(EXAMPLES)
+
+    assert set(result) == {"input_ids", "position_ids", "labels"}
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_neat_packing_blocks_are_exactly_cutoff_len():
+    processor = _neat_processor(64)
+    result = processor.preprocess_dataset(EXAMPLES)
+
+    for key in ("input_ids", "position_ids", "labels"):
+        for row in result[key]:
+            assert len(row) == 64
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_neat_packing_restarts_position_ids_per_document():
+    processor = _neat_processor(64)
+    prefix_ids = _prefix_ids(processor)
+    result = processor.preprocess_dataset(EXAMPLES)
+
+    for input_ids, position_ids in zip(result["input_ids"], result["position_ids"]):
+        starts = [i for i, position in enumerate(position_ids) if position == 0]
+        assert starts and starts[0] == 0
+        for lo, hi in zip(starts, starts[1:] + [len(position_ids)]):
+            # each run is a contiguous 0..n-1, which is what transformers keys the block mask on
+            assert position_ids[lo:hi] == list(range(hi - lo))
+            if input_ids[lo] != processor.tokenizer.pad_token_id:
+                assert input_ids[lo : lo + len(prefix_ids)] == prefix_ids
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_neat_packing_masks_document_starts_and_padding():
+    processor = _neat_processor(64)
+    result = processor.preprocess_dataset(EXAMPLES)
+    pad_token_id = processor.tokenizer.pad_token_id
+
+    for input_ids, position_ids, labels in zip(result["input_ids"], result["position_ids"], result["labels"]):
+        for i, (input_id, position, label) in enumerate(zip(input_ids, position_ids, labels)):
+            if position == 0:
+                # would otherwise be predicted from the previous document
+                assert label == IGNORE_INDEX
+            elif input_id == pad_token_id:
+                assert label == IGNORE_INDEX
+            else:
+                assert label == input_id
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_neat_packing_keeps_every_document():
+    r"""Unlike plain packing it drops no remainder, and unlike SFT packing it drops nothing lengthy."""
+    processor = _neat_processor(64)
+    result = processor.preprocess_dataset(EXAMPLES)
+    pad_token_id = processor.tokenizer.pad_token_id
+
+    emitted = [i for row in result["input_ids"] for i in row if i != pad_token_id]
+    expected = 0
+    for document in DOCUMENTS:
+        expected += len(processor.tokenizer(document + "<|end_of_text|>", add_special_tokens=False)["input_ids"])
+    expected += len(_prefix_ids(processor)) * len(DOCUMENTS)
+    assert len(emitted) == expected
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_neat_packing_splits_documents_longer_than_a_block():
+    r"""A long document is split across blocks instead of being dropped or truncated."""
+    cutoff_len = 16
+    processor = _neat_processor(cutoff_len)
+    prefix_ids = _prefix_ids(processor)
+    long_document = " ".join(f"word{i}" for i in range(200))
+    result = processor.preprocess_dataset({"_prompt": [[{"role": "user", "content": long_document}]]})
+    pad_token_id = processor.tokenizer.pad_token_id
+
+    body = processor.tokenizer(long_document + "<|end_of_text|>", add_special_tokens=False)["input_ids"]
+    content_size = cutoff_len - len(prefix_ids)
+    expected_pieces = -(-len(body) // content_size)
+
+    starts = [
+        (row, i)
+        for row in result["input_ids"]
+        for i, token in enumerate(row)
+        if token != pad_token_id and row[i : i + len(prefix_ids)] == prefix_ids
+    ]
+    assert len(starts) >= expected_pieces
+    emitted = [i for row in result["input_ids"] for i in row if i != pad_token_id]
+    assert len(emitted) == len(body) + len(prefix_ids) * expected_pieces
