@@ -136,3 +136,43 @@ def test_pretrain_templates_without_prefix_get_no_prefix(packing: bool):
     result = processor.preprocess_dataset(EXAMPLES)
     first_content_id = processor.tokenizer(DOCUMENTS[0], add_special_tokens=False)["input_ids"][0]
     assert result["input_ids"][0][0] == first_content_id
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+@pytest.mark.parametrize(
+    ("stage", "packing", "neat_packing", "expected_cutoff_len"),
+    [
+        # PT slices at block_size == cutoff_len, so it must not be decremented.
+        ("pt", None, False, 4096),
+        ("pt", True, False, 4096),
+        ("pt", False, False, 4096),
+        # SFT packing emits cutoff_len + 1 tokens, so the decrement is what makes the packed
+        # sequence come out at the length that was actually requested.
+        ("sft", True, False, 4095),
+        ("sft", None, True, 4095),
+        ("sft", None, False, 4096),
+        ("sft", False, False, 4096),
+    ],
+)
+def test_packing_cutoff_len_is_stage_aware(
+    stage: str, packing: bool | None, neat_packing: bool, expected_cutoff_len: int
+):
+    from llamafactory.hparams import get_train_args
+
+    args = {
+        "model_name_or_path": TINY_LLAMA3,
+        "stage": stage,
+        "do_train": True,
+        "finetuning_type": "lora",
+        "dataset": "alpaca_en_demo",
+        "template": "llama3",
+        "cutoff_len": 4096,
+        "output_dir": "dummy_dir",
+        "report_to": "none",
+        "neat_packing": neat_packing,
+    }
+    if packing is not None:
+        args["packing"] = packing
+
+    _, data_args, _, _, _ = get_train_args(args)
+    assert data_args.cutoff_len == expected_cutoff_len

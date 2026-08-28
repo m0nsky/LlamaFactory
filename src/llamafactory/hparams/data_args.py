@@ -181,8 +181,9 @@ class DataArguments:
         if self.neat_packing:
             self.packing = True
 
-        if self.packing:
-            self.cutoff_len -= 1  # avoid pad_to_multiple_of, needs improve
+        # NOTE: the packing decrement of `cutoff_len` used to live here, but it only applies to SFT
+        # and this runs before the stage is known. `get_train_args` applies it once the stage is
+        # resolved. See the comment there.
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
