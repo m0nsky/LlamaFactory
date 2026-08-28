@@ -20,6 +20,7 @@ from transformers import AutoTokenizer
 
 from llamafactory.data import get_template_and_fix_tokenizer
 from llamafactory.data.template import parse_template
+from llamafactory.extras.constants import IGNORE_INDEX
 from llamafactory.extras.packages import is_transformers_version_greater_than
 from llamafactory.hparams import DataArguments
 
@@ -351,3 +352,49 @@ def test_parse_qwen3_template():
     assert template.format_system.slots == ["<|im_start|>system\n{{content}}<|im_end|>\n"]
     assert template.format_prefix.slots == []
     assert template.default_system == ""
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+@pytest.mark.parametrize("enable_thinking", [None, True, False])
+def test_nothink_template_ignores_enable_thinking(enable_thinking: bool | None):
+    r"""A `_nothink` template owns its mode; `enable_thinking` must not switch thinking back on."""
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-4-E4B-it")
+    kwargs = {} if enable_thinking is None else {"enable_thinking": enable_thinking}
+    data_args = DataArguments(template="gemma4_text_nothink", cutoff_len=64, **kwargs)
+
+    template = get_template_and_fix_tokenizer(tokenizer, data_args)
+    assert template.enable_thinking is False
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_thinking_template_honours_enable_thinking():
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-4-E4B-it")
+
+    template = get_template_and_fix_tokenizer(tokenizer, DataArguments(template="gemma4_text", cutoff_len=64))
+    assert template.enable_thinking is True
+
+    template = get_template_and_fix_tokenizer(
+        tokenizer, DataArguments(template="gemma4_text", cutoff_len=64, enable_thinking=False)
+    )
+    assert template.enable_thinking is False
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_nothink_template_masks_the_empty_thought_block():
+    r"""The empty thought block belongs to the prompt, not the response.
+
+    Gemma 4 pre-fills `<|channel>thought\n<channel|>` into the generation prompt when thinking is
+    off, so training must keep it there and compute no loss over it.
+    """
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-4-E4B-it")
+    data_args = DataArguments(template="gemma4_text_nothink", cutoff_len=128)
+    template = get_template_and_fix_tokenizer(tokenizer, data_args)
+
+    prompt_ids, response_ids = template.encode_oneturn(tokenizer, MESSAGES[:2])
+    thought_ids = template.get_thought_word_ids(tokenizer)
+
+    # the block is present, and it sits in the prompt (masked) rather than the response (trained)
+    assert thought_ids
+    assert prompt_ids[-len(thought_ids) :] == thought_ids
+    assert response_ids[: len(thought_ids)] != thought_ids
+    assert IGNORE_INDEX not in response_ids

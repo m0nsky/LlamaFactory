@@ -638,12 +638,43 @@ def get_template_and_fix_tokenizer(tokenizer: "PreTrainedTokenizer", data_args: 
         template.default_system = data_args.default_system
 
     if isinstance(template, ReasoningTemplate):
-        logger.warning_rank0(
-            "You are using reasoning template, "
-            "please add `_nothink` suffix if the model is not a reasoning model. "
-            "e.g., qwen3_vl_nothink"
-        )
-        template.enable_thinking = data_args.enable_thinking
+        # A `_nothink` template *is* the non-thinking variant, so it owns its own mode and
+        # `enable_thinking` must not be able to flip it back on.
+        #
+        # Upstream's `_nothink` templates (qwen3_nothink, ernie_nothink, ...) are plain `Template`s
+        # and never reach this branch, so this only affects templates that are both a
+        # `ReasoningTemplate` and `_nothink` — currently just gemma4_text_nothink, which has to be a
+        # `ReasoningTemplate` because gemma4 still needs the empty thought channel
+        # (`<|channel>thought\n<channel|>`) emitted. Its chat template puts that block in the
+        # *generation prompt* when thinking is off, so training has to keep it in the prompt and
+        # mask it. With `enable_thinking` left at its default of True, `ReasoningTemplate` instead
+        # prepends it to the response and computes loss over it — training the model to generate
+        # tokens that inference always pre-fills for it.
+        #
+        # The warning is skipped for the same reason: telling someone to add a `_nothink` suffix
+        # while they are already using one is just noise.
+        if (data_args.template or "").endswith("_nothink"):
+            template.enable_thinking = False
+        else:
+            if data_args.enable_thinking is False and f"{data_args.template}_nothink" in TEMPLATES:
+                # `enable_thinking: false` only stops the thought block being trained on; the rest
+                # of the template still says the model is thinking. For gemma4 that means
+                # `format_system` keeps emitting `<|think|>`, which is precisely the token that
+                # turns thinking on at inference — so the model gets told to think and trained not
+                # to. The `_nothink` variant is the one that drops it.
+                logger.warning_rank0(
+                    f"`enable_thinking: false` does not change the rest of the {data_args.template} "
+                    f"template, which may still carry the model's thinking trigger. "
+                    f"Use `{data_args.template}_nothink` instead."
+                )
+            else:
+                logger.warning_rank0(
+                    "You are using reasoning template, "
+                    "please add `_nothink` suffix if the model is not a reasoning model. "
+                    "e.g., qwen3_vl_nothink"
+                )
+
+            template.enable_thinking = data_args.enable_thinking
 
     template.fix_special_tokens(tokenizer)
     template.fix_jinja_template(tokenizer)
