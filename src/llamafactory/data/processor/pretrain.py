@@ -58,26 +58,51 @@ class PretrainDatasetProcessor(DatasetProcessor):
             eos_token = self.tokenizer.eos_token
         text_examples = [messages[0]["content"] + eos_token for messages in examples["_prompt"]]
 
-        if not self.data_args.packing:
-            if getattr(self.tokenizer, "add_bos_token", False):
-                text_examples = [self.tokenizer.bos_token + example for example in text_examples]
+        # Every sequence the model sees must open with the template's sequence-start prefix
+        # (`<bos>` for gemma/llama/mistral, `[gMASK]<sop>` for glm, ...). The chat templates emit it
+        # via `format_prefix`, and inference always does; training has to match.
+        #
+        # This used to be gated on `tokenizer.add_bos_token`, which is the wrong signal. Gemma 4
+        # dropped that field from its tokenizer_config (google/gemma-4-E4B-it has no
+        # `add_bos_token`, and tokenizer.json's post-processor adds nothing), so it reads as False
+        # and the prefix was never applied — while its chat_template.jinja still starts with
+        # `{{ bos_token }}`. Gemma 2/3/3n set it to True, so the same model family disagreed with
+        # itself. `format_prefix` is what the template actually declares, so use that.
+        #
+        # The cost of getting this wrong on gemma4 is not subtle. Measured on gemma-4-E4B-it,
+        # same tokens, with vs without a leading `<bos>`:
+        #   - a document read cold:      ppl 32,686 -> 9.6
+        #   - a mid-document fragment:   ppl 10,154 -> 83   (i.e. what a packed block looks like)
+        # and the gap is still 171x at tokens 32..96 in, so it is not just a first-token artifact.
+        # Those tokens carry enormous loss and dominate the gradient.
+        prefix_ids = self.template._convert_elements_to_ids(self.tokenizer, self.template.format_prefix.apply())
 
+        if not self.data_args.packing:
+            # Leave room for the prefix so a document still ends up exactly `cutoff_len` long.
             result = self.tokenizer(
-                text_examples, add_special_tokens=False, truncation=True, max_length=self.data_args.cutoff_len
+                text_examples,
+                add_special_tokens=False,
+                truncation=True,
+                max_length=self.data_args.cutoff_len - len(prefix_ids),
             )
+            if prefix_ids:
+                result["input_ids"] = [prefix_ids + input_ids for input_ids in result["input_ids"]]
+                result["attention_mask"] = [
+                    [1] * len(prefix_ids) + attention_mask for attention_mask in result["attention_mask"]
+                ]
         else:
             tokenized_examples = self.tokenizer(text_examples, add_special_tokens=False)
-            concatenated_examples = {k: list(chain(*tokenized_examples[k])) for k in tokenized_examples.keys()}
-            total_length = len(concatenated_examples[list(concatenated_examples.keys())[0]])
+            concatenated_ids = list(chain(*tokenized_examples["input_ids"]))
             block_size = self.data_args.cutoff_len
-            total_length = max((total_length // block_size) * block_size, block_size)
-            result = {
-                k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
-                for k, t in concatenated_examples.items()
-            }
-            if getattr(self.tokenizer, "add_bos_token", False):
-                for i in range(len(result["input_ids"])):
-                    result["input_ids"][i][0] = self.tokenizer.bos_token_id
+            # The prefix is part of the block, not an addition to it: each block is one prefix plus
+            # `content_size` tokens of the document stream, so blocks stay exactly `block_size` long.
+            content_size = block_size - len(prefix_ids)
+            total_length = len(concatenated_ids)
+            total_length = max((total_length // content_size) * content_size, content_size)
+            input_ids = [
+                prefix_ids + concatenated_ids[i : i + content_size] for i in range(0, total_length, content_size)
+            ]
+            result = {"input_ids": input_ids, "attention_mask": [[1] * len(ids) for ids in input_ids]}
 
         return result
 
