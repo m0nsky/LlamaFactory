@@ -110,7 +110,11 @@ class PtMixedCollator:
         self.neat_packing = neat_packing
 
     def __call__(self, features):
-        if self.neat_packing:
+        # Route per batch, not per run: with `neat_packing` on, the PT train set arrives
+        # neat-packed, but an SFT-format eval set is deliberately processed unpacked (see
+        # `_get_preprocessed_dataset`) and so carries no `position_ids`. Keying off
+        # `self.neat_packing` alone raised `KeyError: 'position_ids'` on the first eval step.
+        if self.neat_packing and features and "position_ids" in features[0]:
             # `PretrainDatasetProcessor._neat_pack` already emits fixed-length blocks with labels
             # and per-document `position_ids`, so there is nothing to pad or derive.
             #

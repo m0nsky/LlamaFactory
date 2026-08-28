@@ -277,3 +277,30 @@ def test_neat_packing_splits_documents_longer_than_a_block():
     assert len(starts) >= expected_pieces
     emitted = [i for row in result["input_ids"] for i in row if i != pad_token_id]
     assert len(emitted) == len(body) + len(prefix_ids) * expected_pieces
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_pt_collator_routes_per_batch_when_neat_packing():
+    r"""An SFT-format eval set during PT is processed unpacked, so it carries no `position_ids`.
+
+    `PtMixedCollator` has to decide per batch, not once per run, or evaluating a PT run that uses
+    neat packing raises `KeyError: 'position_ids'` on the first eval step.
+    """
+    import torch
+
+    from llamafactory.data import PtMixedCollator
+
+    # go through the template so the tokenizer gets a pad token, as it does in a real run
+    tokenizer = AutoTokenizer.from_pretrained(TINY_LLAMA3)
+    get_template_and_fix_tokenizer(tokenizer, DataArguments(template="llama3", cutoff_len=64))
+    collator = PtMixedCollator(tokenizer=tokenizer, neat_packing=True)
+
+    neat_packed = {"input_ids": [1, 2, 3, 4], "position_ids": [0, 1, 0, 1], "labels": [-100, 2, -100, 4]}
+    batch = collator([neat_packed])
+    assert "attention_mask" not in batch
+    assert batch["position_ids"].tolist() == [[0, 1, 0, 1]]
+
+    unpacked_eval = {"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1], "labels": [-100, 2, 3]}
+    batch = collator([unpacked_eval])
+    assert torch.is_tensor(batch["attention_mask"])
+    assert batch["input_ids"].shape[-1] == batch["attention_mask"].shape[-1]
