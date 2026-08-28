@@ -343,3 +343,66 @@ def test_4d_attention_mask():
 
 if __name__ == "__main__":
     test_multimodal_collator()
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+@pytest.mark.parametrize("attn_implementation", ["sdpa", "eager"])
+def test_neat_packing_defers_the_mask_to_transformers(attn_implementation: str):
+    r"""Packed batches carry `position_ids`, so no 4D mask is built.
+
+    A pre-built 4D mask is returned as-is by transformers for every layer type, which silently
+    replaces a hybrid model's sliding-window mask with a full one. Handing over `position_ids`
+    instead lets transformers build both the block-diagonal and the sliding-window mask correctly.
+    """
+    from llamafactory.data.collator import SFTDataCollatorWith4DAttentionMask
+
+    model_args, data_args, *_ = get_infer_args(
+        {"model_name_or_path": TINY_LLAMA3, "template": "llama3", "cutoff_len": 16}
+    )
+    tokenizer_module = load_tokenizer(model_args)
+    template = get_template_and_fix_tokenizer(tokenizer_module["tokenizer"], data_args)
+    collator = SFTDataCollatorWith4DAttentionMask(
+        template=template,
+        model=None,
+        label_pad_token_id=IGNORE_INDEX,
+        block_diag_attn=True,
+        neat_packing=True,
+        attn_implementation=attn_implementation,
+        compute_dtype=torch.float32,
+        **tokenizer_module,
+    )
+
+    packed = {
+        "input_ids": [1, 2, 3, 4, 5, 6],
+        "attention_mask": [1, 1, 1, 2, 2, 2],
+        "position_ids": [0, 1, 2, 0, 1, 2],
+        "labels": [1, 2, 3, 4, 5, 6],
+    }
+    batch = collator([packed])
+
+    assert "attention_mask" not in batch
+    assert batch["position_ids"].tolist() == [[0, 1, 2, 0, 1, 2]]
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_neat_packing_falls_back_to_the_4d_mask_without_position_ids():
+    from llamafactory.data.collator import SFTDataCollatorWith4DAttentionMask
+
+    model_args, data_args, *_ = get_infer_args(
+        {"model_name_or_path": TINY_LLAMA3, "template": "llama3", "cutoff_len": 16}
+    )
+    tokenizer_module = load_tokenizer(model_args)
+    template = get_template_and_fix_tokenizer(tokenizer_module["tokenizer"], data_args)
+    collator = SFTDataCollatorWith4DAttentionMask(
+        template=template,
+        model=None,
+        label_pad_token_id=IGNORE_INDEX,
+        block_diag_attn=True,
+        neat_packing=True,
+        attn_implementation="sdpa",
+        compute_dtype=torch.float32,
+        **tokenizer_module,
+    )
+
+    batch = collator([{"input_ids": [1, 2, 3, 4], "attention_mask": [1, 1, 2, 2], "labels": [1, 2, 3, 4]}])
+    assert batch["attention_mask"].dim() == 4

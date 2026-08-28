@@ -547,14 +547,36 @@ class SFTDataCollatorWith4DAttentionMask(MultiModalDataCollatorForSeq2Seq):
         features = super().__call__(features)
         has_dummy_image = features.pop("has_dummy_image", False)
         if self.block_diag_attn and self.attn_implementation != "flash_attention_2":
-            features["attention_mask"] = prepare_4d_attention_mask(features["attention_mask"], self.compute_dtype)
+            if features.get("position_ids") is not None:
+                # Let transformers derive the block-diagonal mask from the per-sub-sequence
+                # `position_ids` the packed processor already emits, the same way the
+                # flash_attention_2 branch below does.
+                #
+                # `prepare_4d_attention_mask` cannot be used on a hybrid-attention model: a
+                # pre-built 4D mask is returned as-is for *every* layer type, so it overwrites the
+                # sliding-window mask with a full one. Measured on gemma4 (`sliding_window` 512) at
+                # sequence length 1200, a sliding layer attended to 700 tokens instead of 512.
+                # The native route gives 512 and still respects the document boundary. For a model
+                # with no sliding window the two routes produce identical masks, so this only
+                # changes behaviour where the 4D route was wrong.
+                #
+                # The key is removed rather than set to None: unsloth's patched `get_batch_samples`
+                # guards on `if "attention_mask" in x` and then calls `mark_static` on the value, so
+                # a present-but-None mask raises `TypeError: issubclass() arg 1 must be a class`.
+                features.pop("attention_mask", None)
+            else:
+                features["attention_mask"] = prepare_4d_attention_mask(
+                    features["attention_mask"], self.compute_dtype
+                )
 
         if self.neat_packing and self.attn_implementation == "flash_attention_2": # FIXME compatibility fa3/fa4
             assert features["input_ids"].shape[0] == 1, "bsz should be 1 for neat packing"
             if not has_dummy_image:
                 self._unpad_packed_features(features)
 
-            features["attention_mask"] = None  # let transformers handle causal packed mask.
+            # let transformers handle the causal packed mask; removed rather than set to None so
+            # unsloth's `get_batch_samples` does not try to `mark_static` a None (see above)
+            features.pop("attention_mask", None)
 
         for key, value in features.items():  # cast data dtype for paligemma
             if torch.is_tensor(value) and torch.is_floating_point(value):
