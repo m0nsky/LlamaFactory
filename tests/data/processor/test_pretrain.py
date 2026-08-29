@@ -45,7 +45,8 @@ def _build_processor(template_name: str, cutoff_len: int, packing: bool) -> Pret
 
 
 def _prefix_ids(processor: PretrainDatasetProcessor) -> list[int]:
-    return processor.template._convert_elements_to_ids(processor.tokenizer, processor.template.format_prefix.apply())
+    r"""PT deliberately emits no sequence-start prefix; see the rationale in `pretrain.py`."""
+    return []
 
 
 @pytest.mark.runs_on(["cpu", "mps"])
@@ -72,60 +73,20 @@ def test_pretrain_packing_emits_one_short_block_when_data_is_smaller_than_a_bloc
 
 
 @pytest.mark.runs_on(["cpu", "mps"])
-def test_pretrain_packed_blocks_start_with_template_prefix():
-    processor = _build_processor("llama3", 24, packing=True)
-    prefix_ids = _prefix_ids(processor)
-    assert prefix_ids, "llama3 declares a sequence-start prefix"
-
-    result = processor.preprocess_dataset(EXAMPLES)
-    for input_ids in result["input_ids"]:
-        assert input_ids[: len(prefix_ids)] == prefix_ids
-
-
-@pytest.mark.runs_on(["cpu", "mps"])
-def test_pretrain_packing_prepends_prefix_without_dropping_content():
-    r"""The prefix must be inserted, not written over the first token of the block."""
-    processor = _build_processor("llama3", 24, packing=True)
-    prefix_ids = _prefix_ids(processor)
-    result = processor.preprocess_dataset(EXAMPLES)
-
-    # rebuild the document stream the processor concatenates, and check it survives verbatim.
-    # llama3 separates documents with `<|end_of_text|>`, not the turn terminator that
-    # `replace_eos` leaves in `tokenizer.eos_token`.
-    eos_token = "<|end_of_text|>"
-    stream = []
-    for document in DOCUMENTS:
-        stream += processor.tokenizer(document + eos_token, add_special_tokens=False)["input_ids"]
-
-    content_size = 24 - len(prefix_ids)
-    for block_index, input_ids in enumerate(result["input_ids"]):
-        expected = stream[block_index * content_size : (block_index + 1) * content_size]
-        assert input_ids[len(prefix_ids) :] == expected
-
-
-@pytest.mark.runs_on(["cpu", "mps"])
-def test_pretrain_unpacked_documents_carry_prefix_and_eos():
-    processor = _build_processor("llama3", 64, packing=False)
-    prefix_ids = _prefix_ids(processor)
-    result = processor.preprocess_dataset(EXAMPLES)
-
-    assert len(result["input_ids"]) == len(DOCUMENTS)
-    for input_ids, document in zip(result["input_ids"], DOCUMENTS):
-        assert input_ids[: len(prefix_ids)] == prefix_ids
-        body = processor.tokenizer(document, add_special_tokens=False)["input_ids"]
-        assert input_ids[len(prefix_ids) : len(prefix_ids) + len(body)] == body
-
-
-@pytest.mark.runs_on(["cpu", "mps"])
 @pytest.mark.parametrize("packing", [True, False])
-def test_pretrain_never_doubles_the_prefix(packing: bool):
-    r"""`add_special_tokens=False` keeps the tokenizer from adding a second bos of its own."""
+def test_pretrain_emits_no_sequence_start_prefix(packing: bool):
+    r"""PT must not prefix documents with `<bos>`.
+
+    Doing so retrains the token's meaning from "a chat turn is starting" to "a document is
+    starting", which measurably degrades a continued-pretrained instruct model. See `pretrain.py`.
+    """
     processor = _build_processor("llama3", 24, packing=packing)
-    prefix_ids = _prefix_ids(processor)
+    bos_token_id = processor.tokenizer.bos_token_id
     result = processor.preprocess_dataset(EXAMPLES)
 
+    assert bos_token_id is not None, "llama3 has a bos token, so this test is meaningful"
     for input_ids in result["input_ids"]:
-        assert input_ids[len(prefix_ids) : 2 * len(prefix_ids)] != prefix_ids
+        assert bos_token_id not in input_ids
 
 
 @pytest.mark.runs_on(["cpu", "mps"])

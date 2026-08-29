@@ -60,24 +60,39 @@ class PretrainDatasetProcessor(DatasetProcessor):
             eos_token = self.tokenizer.eos_token
         text_examples = [messages[0]["content"] + eos_token for messages in examples["_prompt"]]
 
-        # Every sequence the model sees must open with the template's sequence-start prefix
-        # (`<bos>` for gemma/llama/mistral, `[gMASK]<sop>` for glm, ...). The chat templates emit it
-        # via `format_prefix`, and inference always does; training has to match.
+        # PT blocks deliberately do NOT open with the template's sequence-start token (`<bos>`).
         #
-        # This used to be gated on `tokenizer.add_bos_token`, which is the wrong signal. Gemma 4
-        # dropped that field from its tokenizer_config (google/gemma-4-E4B-it has no
-        # `add_bos_token`, and tokenizer.json's post-processor adds nothing), so it reads as False
-        # and the prefix was never applied — while its chat_template.jinja still starts with
-        # `{{ bos_token }}`. Gemma 2/3/3n set it to True, so the same model family disagreed with
-        # itself. `format_prefix` is what the template actually declares, so use that.
+        # That is not an oversight, and it is not what the model's own pretraining convention would
+        # suggest — it is a measured result. Prefixing every document with `<bos>` does exactly what
+        # you would expect at the token level: on gemma-4-E4B-it it takes a cold document from
+        # ppl 32,686 -> 9.6, and a mid-document fragment (what a packed block looks like) from
+        # 10,154 -> 83, still 171x better at tokens 32..96 in. Those tokens otherwise carry enormous
+        # loss and dominate the gradient.
         #
-        # The cost of getting this wrong on gemma4 is not subtle. Measured on gemma-4-E4B-it,
-        # same tokens, with vs without a leading `<bos>`:
-        #   - a document read cold:      ppl 32,686 -> 9.6
-        #   - a mid-document fragment:   ppl 10,154 -> 83   (i.e. what a packed block looks like)
-        # and the gap is still 171x at tokens 32..96 in, so it is not just a first-token artifact.
-        # Those tokens carry enormous loss and dominate the gradient.
-        prefix_ids = self.template._convert_elements_to_ids(self.tokenizer, self.template.format_prefix.apply())
+        # But this stage continued-pretrains an *instruct* model that is then served as a chat
+        # model, and there `<bos>` already means "a chat turn is starting" — every inference prompt
+        # opens with it. Prefixing ~1,800 raw-document blocks with `<bos>` overwrites that
+        # association with "a long document is starting", and the served model answers chat prompts
+        # with rambling, non-terminating prose.
+        #
+        # Ablation (gemma-4-E4B-it, 48 held-out questions, greedy decoding, checkpoints matched on
+        # epochs; figure is the share of answers containing an 8-gram repeated >3x):
+        #
+        #                     plain packing        neat packing
+        #     ~2.2 epochs   no-BOS  21%             10%
+        #                   BOS     29%             44%
+        #     ~2.7 epochs   no-BOS  31%             21%
+        #                   BOS     60%             40%
+        #
+        #   pooled BOS effect over the four matched pairs: +22.4pp +/- 9.1 (95% CI) -- significant.
+        #   The untrained base model loops on 0/48. Train loss is identical with and without `<bos>`
+        #   (0.232 vs 0.234 at step 90), so this is a conditioning effect, not overfitting.
+        #
+        # If you are continued-pretraining a *base* model rather than an instruct one, the trade
+        # runs the other way and the prefix is worth restoring. The fix that should get both is to
+        # wrap PT documents in the chat structure the model is actually served with, so `<bos>` is
+        # followed by `<|turn>` as at inference -- untested here.
+        prefix_ids: list[int] = []
 
         if self.data_args.packing and self.data_args.neat_packing:
             return self._neat_pack(text_examples, prefix_ids)
