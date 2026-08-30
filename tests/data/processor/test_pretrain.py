@@ -36,9 +36,16 @@ DOCUMENTS = [
 EXAMPLES = {"_prompt": [[{"role": "user", "content": document}] for document in DOCUMENTS]}
 
 
-def _build_processor(template_name: str, cutoff_len: int, packing: bool) -> PretrainDatasetProcessor:
+def _build_processor(
+    template_name: str, cutoff_len: int, packing: bool, pt_document_markers: str = "none"
+) -> PretrainDatasetProcessor:
     tokenizer = AutoTokenizer.from_pretrained(TINY_LLAMA3)
-    data_args = DataArguments(template=template_name, cutoff_len=cutoff_len, packing=packing)
+    data_args = DataArguments(
+        template=template_name,
+        cutoff_len=cutoff_len,
+        packing=packing,
+        pt_document_markers=pt_document_markers,
+    )
     data_args.cutoff_len = cutoff_len  # `__post_init__` decrements it when packing, undo for clarity
     template = get_template_and_fix_tokenizer(tokenizer, data_args)
     return PretrainDatasetProcessor(template=template, tokenizer=tokenizer, processor=None, data_args=data_args)
@@ -210,7 +217,7 @@ def test_neat_packing_keeps_every_document():
     emitted = [i for row in result["input_ids"] for i in row if i != pad_token_id]
     expected = 0
     for document in DOCUMENTS:
-        expected += len(processor.tokenizer(document + "<|end_of_text|>", add_special_tokens=False)["input_ids"])
+        expected += len(processor.tokenizer(document, add_special_tokens=False)["input_ids"])
     expected += len(_prefix_ids(processor)) * len(DOCUMENTS)
     assert len(emitted) == expected
 
@@ -225,7 +232,7 @@ def test_neat_packing_splits_documents_longer_than_a_block():
     result = processor.preprocess_dataset({"_prompt": [[{"role": "user", "content": long_document}]]})
     pad_token_id = processor.tokenizer.pad_token_id
 
-    body = processor.tokenizer(long_document + "<|end_of_text|>", add_special_tokens=False)["input_ids"]
+    body = processor.tokenizer(long_document, add_special_tokens=False)["input_ids"]
     content_size = cutoff_len - len(prefix_ids)
     expected_pieces = -(-len(body) // content_size)
 
@@ -265,3 +272,38 @@ def test_pt_collator_routes_per_batch_when_neat_packing():
     batch = collator([unpacked_eval])
     assert torch.is_tensor(batch["attention_mask"])
     assert batch["input_ids"].shape[-1] == batch["attention_mask"].shape[-1]
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+@pytest.mark.parametrize("packing", [True, False])
+def test_pt_document_markers_none_is_the_default(packing: bool):
+    r"""The default emits neither marker, which is what CPT of an instruct model wants."""
+    processor = _build_processor("llama3", 32, packing=packing)
+    assert processor.data_args.pt_document_markers == "none"
+
+    result = processor.preprocess_dataset(EXAMPLES)
+    flat = [token for row in result["input_ids"] for token in row]
+    assert processor.tokenizer.bos_token_id not in flat
+    assert processor.tokenizer.convert_tokens_to_ids("<|end_of_text|>") not in flat
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+@pytest.mark.parametrize("packing", [True, False])
+def test_pt_document_markers_eos_appends_only_the_eos(packing: bool):
+    processor = _build_processor("llama3", 32, packing=packing, pt_document_markers="eos")
+    result = processor.preprocess_dataset(EXAMPLES)
+    flat = [token for row in result["input_ids"] for token in row]
+
+    assert processor.tokenizer.convert_tokens_to_ids("<|end_of_text|>") in flat
+    assert processor.tokenizer.bos_token_id not in flat
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_pt_document_markers_bos_eos_emits_both():
+    processor = _build_processor("llama3", 32, packing=True, pt_document_markers="bos_eos")
+    result = processor.preprocess_dataset(EXAMPLES)
+
+    for input_ids in result["input_ids"]:
+        assert input_ids[0] == processor.tokenizer.bos_token_id
+    flat = [token for row in result["input_ids"] for token in row]
+    assert processor.tokenizer.convert_tokens_to_ids("<|end_of_text|>") in flat

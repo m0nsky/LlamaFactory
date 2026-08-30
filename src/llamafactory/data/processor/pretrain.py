@@ -29,8 +29,11 @@ class PretrainDatasetProcessor(DatasetProcessor):
     def preprocess_dataset(self, examples: dict[str, list[Any]]) -> dict[str, list[Any]]:
         # build grouped texts with format `X1 X2 X3 ...` if packing is enabled
 
-        # This token separates documents in the pretraining stream, so it must be the model's real
-        # end-of-sequence token — not the chat turn terminator.
+        # `pt_document_markers` decides what, if anything, wraps each document. The default is
+        # `none`; see the block below the eos resolution for why, and `data_args.py` for the modes.
+        #
+        # When a marker *is* emitted, this token must be the model's real end-of-sequence token —
+        # not the chat turn terminator.
         #
         # Templates with `replace_eos=True` overwrite `tokenizer.eos_token` with their first stop
         # word, so by the time we get here it is a conversational control token: `<end_of_turn>`
@@ -58,9 +61,12 @@ class PretrainDatasetProcessor(DatasetProcessor):
             eos_token = "<eos>"
         else:
             eos_token = self.tokenizer.eos_token
+        if self.data_args.pt_document_markers == "none":
+            eos_token = ""
+
         text_examples = [messages[0]["content"] + eos_token for messages in examples["_prompt"]]
 
-        # PT blocks deliberately do NOT open with the template's sequence-start token (`<bos>`).
+        # Under the default `pt_document_markers="none"`, PT blocks carry no `<bos>` and no eos.
         #
         # That is not an oversight, and it is not what the model's own pretraining convention would
         # suggest — it is a measured result. Prefixing every document with `<bos>` does exactly what
@@ -88,11 +94,16 @@ class PretrainDatasetProcessor(DatasetProcessor):
         #   The untrained base model loops on 0/48. Train loss is identical with and without `<bos>`
         #   (0.232 vs 0.234 at step 90), so this is a conditioning effect, not overfitting.
         #
-        # If you are continued-pretraining a *base* model rather than an instruct one, the trade
-        # runs the other way and the prefix is worth restoring. The fix that should get both is to
-        # wrap PT documents in the chat structure the model is actually served with, so `<bos>` is
-        # followed by `<|turn>` as at inference -- untested here.
+        # Removing the eos as well (`none` vs `eos`) measured as -5.2pp +/- 9.5 -- directionally
+        # better, not significant at n=48. It is the default because with `neat_packing` the
+        # separator has no work left to do: block-diagonal attention plus the masked first label
+        # already mean nothing is trained to follow a document's last token.
+        #
+        # If you are pretraining a *base* model from scratch, the trade runs the other way and the
+        # markers are what give these tokens their meaning -- use `pt_document_markers="bos_eos"`.
         prefix_ids: list[int] = []
+        if self.data_args.pt_document_markers == "bos_eos":
+            prefix_ids = self.template._convert_elements_to_ids(self.tokenizer, self.template.format_prefix.apply())
 
         if self.data_args.packing and self.data_args.neat_packing:
             return self._neat_pack(text_examples, prefix_ids)

@@ -113,6 +113,18 @@ class DataArguments:
         default=False,
         metadata={"help": "Enable sequence packing without cross-attention."},
     )
+    pt_document_markers: Literal["none", "eos", "bos_eos"] = field(
+        default="none",
+        metadata={
+            "help": (
+                "Which special tokens to wrap PT documents in. `none` emits the document alone and "
+                "is the right choice when continued-pretraining an instruct model, because `<bos>` "
+                "and the eos token already carry chat meaning that training would overwrite. `eos` "
+                "appends the model's end-of-sequence token. `bos_eos` also prepends the template's "
+                "sequence-start token, which is what pretraining a base model from scratch wants."
+            )
+        },
+    )
     tool_format: str | None = field(
         default=None,
         metadata={"help": "Tool format to use for constructing function calling examples."},
